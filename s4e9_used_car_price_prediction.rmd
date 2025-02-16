@@ -203,7 +203,7 @@ cars_workflow <-
 
 ### 7. Tuning Grid ----
 ```{r}
-cars_grid <- grid_max_entropy(
+cars_grid <- grid_space_filling(
   #learn_rate(range = c(0.01, 0.1)),
   # loss_reduction(range = c(0, 10)), #Keep if you want it.
   #bag_fraction(range = c(0.7, 0.9)), # Specify prop = TRUE.
@@ -225,15 +225,15 @@ cars_grid <- grid_max_entropy(
 
 ### 9. Tuning and Evaluation ----
 ```{r}
-plan(multisession,workers =4)
+# plan(multisession,workers =2)
 cars_tune_results <- cars_workflow |>
   tune_grid(
     resamples = cars_folds,
     grid = cars_grid,
     metrics = metric_set(rmse),
-    control = control_grid(save_pred = TRUE, 
-                           verbose = TRUE,
-                           allow_par = TRUE) # Keep predictions
+     control = control_grid(save_pred = TRUE, 
+                            verbose = TRUE,
+                            allow_par = F) # Keep predictions
   )
  
  # Find best parameters
@@ -252,7 +252,7 @@ final_lgbm_fit <- last_fit(final_workflow,cars_split )
 final_lgbm_mod <- extract_workflow(final_lgbm_fit )
 collect_metrics(final_lgmb_mod)
 
-plan(sequential)
+# plan(sequential)
 
 ```
 
