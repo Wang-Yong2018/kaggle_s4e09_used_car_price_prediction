@@ -10,6 +10,7 @@ output: html_document
 library(tidyverse)
 library(tidymodels)
 library(future)
+library(textrecipes)
 
 library(bonsai)
 library(lightgbm)
@@ -96,109 +97,166 @@ get_var_compare <- function(rcp,is_debug=F){
 ## coding
 ### 1. Data Loading and Initial Exploration ----
 
-```{r}
- cars_train <- train
- cars_test <- test 
-
- glimpse(cars_train) 
-
- # Check for missing values
- sum(is.na(cars_train)) # Total missing values
-
- #Quickly check for highly correlated features
- cars_train |>
-   select_if(is.numeric) |>
-   cor() |>
-   as.data.frame() |>
-   rownames_to_column("feature1") |>
-   pivot_longer(-feature1, names_to = "feature2", values_to = "correlation") |>
-   filter(feature1 != feature2, abs(correlation) > 0.7) |>
-   arrange(desc(abs(correlation))) |>
-   print()
-```
 
 
 ### 2. Feature Engineering ----
-```{r}
-cars_processed <- cars_train |>
-   mutate(
-     # Example: Age of the car
-     age = year(Sys.Date()) - model_year,
-     age = ifelse(milage < 0, 0, milage), # Handle potential errors in year
-     # Example: Combine Make and Model for more specific categories
-     make_model = paste(brand, model, sep = "_"),
-     # Example: Log transform Price to reduce skew
-     price = log1p(price)
-   )
-
- #Repeat transofmration for test dataset
- cars_test_processed <- cars_test |>
-   mutate(
-     # Example: Age of the car
-     age = year(Sys.Date()) - model_year,
-     age = ifelse(milage < 0, 0, milage), # Handle potential errors in year
-     # Example: Combine Make and Model for more specific categories
-     make_model = paste(brand, model, sep = "_"),
-   )
-```
-
+- leave it in the preprocessing recipe
 
 ### 3. Data Splitting ----
 ```{r}
-set.seed(42)
- cars_split <- initial_split(cars_processed, prop = 0.8, strata = price)
- cars_train_set <- training(cars_split)
- cars_test_set <- testing(cars_split)
-cars_folds <- vfold_cv(cars_train_set, v = 5)
+set.seed(1234)
+df_split <- initial_split(train, prop = 0.8, strata = price)
+ train_set <- training(df_split)
+ test_set <- testing(df_split)
+cv_folds <- vfold_cv(train_set,v = 5)
 ```
 
 
 ### 4. Preprocessing Recipe ----
-```{r}
-cars_recipe <-
-   recipe(price ~ ., data = cars_train_set) |>
-   update_role(id, new_role = "id") |>
-   # Impute numeric missing values with median
-   step_impute_median(all_numeric_predictors()) |>
-   # Impute categorical missing values with mode
-   step_impute_mode(all_nominal_predictors()) |>
-   # One-hot encode nominal predictors
-   step_dummy(all_nominal_predictors())|>
-   #Remove constant features
-   step_zv(all_predictors()) |>
-   #Normalize data
-   step_normalize(all_numeric_predictors())
-```
 
+#### 4.1 base_line
+```{r}
+rcp_bs_v0 <-
+  recipe(price ~ ., data = train) |>
+  update_role(id, new_role = "id") |>
+  step_rm(ext_col,int_col)|>
+  step_impute_median(all_numeric_predictors())|>
+  step_mutate(model_year=2025-model_year,
+              milage_year=milage/model_year,
+              accident=case_when(
+                accident=='None reported'~'none',
+                accident=='At least 1 accident or damage reported'~'report',
+                accident==''~NA,
+                .default='unknow'))|>
+  step_mutate(brand= as.factor(brand),
+              model= as.factor(model),
+              engine= as.factor(engine),
+              #ext_col= as.factor(ext_col),
+              #int_col= as.factor(int_col),
+              transmission= as.factor(transmission),
+              clean_title= as.factor(brand),
+              accident= as.factor(accident),
+              fuel_type=as.factor(fuel_type))|>
+  step_unknown(all_nominal_predictors())|>
+  step_other(all_nominal_predictors(),threshold=0.01)|>
+  step_dummy(all_nominal_predictors(),one_hot = TRUE)|>
+  
+  step_log(price, offset=1, skip=TRUE) |>
+  step_log(milage,model_year,milage_year ,offset=1) |>
+  
+  step_nzv(all_numeric_predictors())|>
+  step_normalize(all_numeric_predictors())|>
+  step_corr(all_predictors())#|>
+  #check_missing(all_predictors())
+ 
+#rcp_bs_v0 |>prep()
+  
+```
+#### base_line with engine feature
+```{r}
+rcp_bs_v1 <- 
+   recipe(price ~ ., data = train) |>
+  update_role(id, new_role = "id") |>
+  step_rm(ext_col,int_col)|>
+  step_mutate(
+    hp =str_extract(engine, "^(\\d+\\.?\\d*)HP|^(\\d+)HP")|>parse_number())|>
+  step_mutate( 
+    litre = str_extract(engine, "(\\d+\\.?\\d*)L|(\\d+\\.?\\d*) Liter")|>parse_number(),
+    engine_type = str_extract(engine,'Rotary|H6|H4|V6|V-8|V8|V10|V12|W12|I3|I4|I6|\\s[4|5|6|8]\\s| 10 | 12 '),
+    is_ecar=case_when(grepl('Electric',engine)~'YES'),
+    voltage = str_extract(engine, " (\\d\\d)V")|>parse_number(),
+    gdi_type = str_extract(engine, "GDI|PFI|EFI|MPFI|DDI|SIDI"),
+    gas_position = str_extract(engine, "OHV|OHC|SOHC|DOHC"),
+    cylinder = str_extract(engine, "(\\d+) Cylinder|(\\d+) Cylinder Engine|(\\d+)(?=[^\\d]*Cylinder)"),
+    is_turbo = case_when(grepl('Turbo|turbo',engine)~'YES'),
+    is_twinturbo= case_when(grepl('Twin|twin',engine)~'YES'),
+    fuel_info = str_extract(engine, "Gasoline|Diesel|Electric|Flexible Fuel|Gasoline/Mild Electric Hybrid|Flex Fuel Capability") )|>
+  step_rm(engine)|>
+  step_impute_median(all_numeric_predictors())|>
+  step_mutate(model_year=2025-model_year,
+              milage_year=milage/model_year,
+              accident=case_when(
+                accident=='None reported'~'none',
+                accident=='At least 1 accident or damage reported'~'report',
+                accident==''~NA,
+                .default='unknow'))|>
+  step_mutate(brand= as.factor(brand),
+              model= as.factor(model),
+              #engine= as.factor(engine),
+              #ext_col= as.factor(ext_col),
+              #int_col= as.factor(int_col),
+              transmission= as.factor(transmission),
+              clean_title= as.factor(brand),
+              accident= as.factor(accident),
+              fuel_type=as.factor(fuel_type))|>
+  step_unknown(all_nominal_predictors())|>
+  step_other(all_nominal_predictors(),threshold=0.01)|>
+  step_dummy(all_nominal_predictors(),one_hot = TRUE)|>
+  step_log(price, offset=1, skip=TRUE) |>
+  step_log(milage,model_year,milage_year ,offset=1) |>
+  
+  step_nzv(all_numeric_predictors())|>
+  step_normalize(all_numeric_predictors())|>
+  step_corr(all_predictors())|>
+  check_missing(all_predictors())
+rcp_bs_v1 |>prep() |>juice()|>bake(new_data = train_set)
+```
 
 ### 5. Model Specification ----
 ```{r}
-lgbm_model <-
+lgbm_eng<-
    boost_tree(
-     trees = 500, # Number of trees
-     learn_rate = 0.1,
-     loss_reduction = 0.001,
-     sample_size = 0.85, # Added sample_size
-     tree_depth = tune(),
-     mtry = tune(),
-     min_n = tune()
+     # trees = 500, # Number of trees
+     # learn_rate = 0.1,
+     # loss_reduction = 0.001,
+     # sample_size = 0.85, # Added sample_size
+     # tree_depth = tune(),
+     # mtry = tune(),
+     # min_n = tune()
    ) |>
+   set_mode("regression")|>
    set_engine("lightgbm",
               metric='rmse', 
               # num_leaves = 30,
-              num_threads = 12,
-              verbose=1) |>
-   set_mode("regression")
+              num_threads = 4,
+              verbose=1) 
+
+lm_eng<-
+   linear_reg() |>
+   set_mode("regression")|>
+   set_engine("lm") 
 
 ```
 
 
 ### 6. Workflow ----
+#### simple wflow
 ```{r}
-cars_workflow <-
-   workflow() |>
-   add_recipe(cars_recipe) |>
-   add_model(lgbm_model)
+simple_wf_fit <-
+  workflow() |>
+  add_recipe(rcp_bs_v1) |>
+  add_model(lm_eng)|>
+  fit(train_set)
+simple_wf_fit|>glance()
+simple_pred <- simple_wf_rmse <- 
+  simple_wf_fit|>
+  predict(new_data = train_set)|>
+  mutate(.pred=expm1(.pred))
+  
+simple_pred|>
+  bind_cols( train_set )|> 
+  rmse(truth=price,estimate=.pred)
+
+
+simple_wf_rmse
+# note: TODO with log 76050, without log 72111, need check 
+```
+#### plot simple wflow mode residual
+```{r}
+simple_wf_fit |> 
+  extract_fit_engine()|>
+  plot()
+
 ```
 
 ### 7. Tuning Grid ----
