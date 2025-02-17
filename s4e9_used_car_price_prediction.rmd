@@ -199,7 +199,7 @@ rcp_bs_v1 <-
   step_normalize(all_numeric_predictors())|>
   step_corr(all_predictors())|>
   check_missing(all_predictors())
-rcp_bs_v1 |>prep() |>juice()|>bake(new_data = train_set)
+rcp_bs_v1 |>prep() |>bake(new_data = train_set)
 ```
 
 ### 5. Model Specification ----
