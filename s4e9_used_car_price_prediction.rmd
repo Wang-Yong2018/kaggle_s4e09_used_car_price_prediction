@@ -114,7 +114,7 @@ cv_folds <- vfold_cv(train_set,v = 5)
 
 ### 4. Preprocessing Recipe ----
 
-#### 4.1 base_line
+#### 4.1 v0 base_line
 ```{r}
 rcp_bs_v0 <-
   recipe(price ~ ., data = train) |>
@@ -137,11 +137,12 @@ rcp_bs_v0 <-
               clean_title= as.factor(brand),
               accident= as.factor(accident),
               fuel_type=as.factor(fuel_type))|>
+  step_novel(all_nominal_predictors())|>
   step_unknown(all_nominal_predictors())|>
   step_other(all_nominal_predictors(),threshold=0.01)|>
   step_dummy(all_nominal_predictors(),one_hot = TRUE)|>
   
-  step_log(price, offset=1, skip=TRUE) |>
+  #step_log(price, offset=1, skip=TRUE) |>
   step_log(milage,model_year,milage_year ,offset=1) |>
   
   step_nzv(all_numeric_predictors())|>
@@ -152,7 +153,7 @@ rcp_bs_v0 <-
 #rcp_bs_v0 |>prep()
   
 ```
-#### base_line with engine feature
+#### 4.2 v1 base_line with engine feature
 ```{r}
 rcp_bs_v1 <- 
    recipe(price ~ ., data = train) |>
@@ -189,6 +190,7 @@ rcp_bs_v1 <-
               clean_title= as.factor(brand),
               accident= as.factor(accident),
               fuel_type=as.factor(fuel_type))|>
+   step_novel(all_nominal_predictors())|>
   step_unknown(all_nominal_predictors())|>
   step_other(all_nominal_predictors(),threshold=0.01)|>
   step_dummy(all_nominal_predictors(),one_hot = TRUE)|>
@@ -199,7 +201,7 @@ rcp_bs_v1 <-
   step_normalize(all_numeric_predictors())|>
   step_corr(all_predictors())|>
   check_missing(all_predictors())
-rcp_bs_v1 |>prep() |>bake(new_data = train_set)
+# rcp_bs_v1 |>prep() |>bake(new_data = train_set)
 ```
 
 ### 5. Model Specification ----
@@ -232,30 +234,52 @@ lm_eng<-
 ### 6. Workflow ----
 #### simple wflow
 ```{r}
+set.seed(1234)
 simple_wf_fit <-
   workflow() |>
-  add_recipe(rcp_bs_v1) |>
+  add_recipe(rcp_bs_v0) |>
   add_model(lm_eng)|>
-  fit(train_set)
-simple_wf_fit|>glance()
-simple_pred <- simple_wf_rmse <- 
+  fit_resamples(cv_folds)
+
+simple_wf_fit|>collect_metrics()
+simple_pred <- simple_wf_rmse <-
   simple_wf_fit|>
   predict(new_data = train_set)|>
   mutate(.pred=expm1(.pred))
-  
+
 simple_pred|>
-  bind_cols( train_set )|> 
+  bind_cols( train_set )|>
   rmse(truth=price,estimate=.pred)
 
 
 simple_wf_rmse
-# note: TODO with log 76050, without log 72111, need check 
-```
-#### plot simple wflow mode residual
-```{r}
-simple_wf_fit |> 
+#note: TODO with log 76050/75230, without log 72111, need check
+simple_wf_fit |>
   extract_fit_engine()|>
   plot()
+
+```
+#### simple workflowset
+
+```{r}
+set.seed(1234)
+library(future)
+plan(multisession,workers = 8)
+ctrl <- control_resamples(save_pred = TRUE, save_workflow = TRUE,verbose=TRUE)
+wfs_result <-
+  workflow_set(preproc = list(bs_v0=rcp_bs_v0,bs_v1=rcp_bs_v1),
+               models = list(linear=lm_eng) ) |>
+  option_add()|>
+  workflow_map(fn='fit_resamples',
+               resamples =cv_folds,
+               metrics = metric_set(rmse, rsq),
+               control = ctrl
+               )
+wfs_result|>collect_metrics()  
+  
+plan(sequential)
+```
+```{r}
 
 ```
 
