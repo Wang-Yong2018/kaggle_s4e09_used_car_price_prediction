@@ -4,6 +4,10 @@ author: "WangYong"
 date: "`r Sys.Date()`"
 output: html_document
 ---
+## Target
+it is used car price prediction, evaluation metric is rmse.
+the mean price of train is 43878.02. use mean price as single model , the kaggle public/private score is 78643/70105. 
+
 ## library & load_data 
 ### library
 ```{r}
@@ -103,12 +107,35 @@ get_var_compare <- function(rcp,is_debug=F){
 - leave it in the preprocessing recipe
 
 ### 3. Data Splitting ----
+#### augment_df
+```{r}
+get_brand_meta <- function(){
+  meta_df <- train|>
+    summarize(cnt=n(), 
+              avg_price=mean(price),
+              median_price=median(price),
+              min_p=min(price),
+              max_p=max(price),
+              sd_p=sd(price),
+              iqr_p = IQR(price),
+              mad_p = mad(price),
+              .by = brand)
+  return(meta_df)
+}
+get_engine_meta <- function(){}
+get_brand_meta()
+
+```
+
+
+#### split/cv
+
 ```{r}
 set.seed(1234)
 df_split <- initial_split(train, prop = 0.8, strata = price)
  train_set <- training(df_split)
  test_set <- testing(df_split)
-cv_folds <- vfold_cv(train_set,v = 5)
+cv_folds <- vfold_cv(train_set,v = 5,strata=price)
 ```
 
 
@@ -134,7 +161,7 @@ rcp_bs_v0 <-
               #ext_col= as.factor(ext_col),
               #int_col= as.factor(int_col),
               transmission= as.factor(transmission),
-              clean_title= as.factor(brand),
+              clean_title= as.factor(clean_title),
               accident= as.factor(accident),
               fuel_type=as.factor(fuel_type))|>
   step_novel(all_nominal_predictors())|>
@@ -147,8 +174,8 @@ rcp_bs_v0 <-
   
   step_nzv(all_numeric_predictors())|>
   step_normalize(all_numeric_predictors())|>
-  step_corr(all_predictors())#|>
-  #check_missing(all_predictors())
+  step_corr(all_predictors())|>
+  check_missing(all_predictors())
  
 #rcp_bs_v0 |>prep()
   
@@ -160,20 +187,22 @@ rcp_bs_v1 <-
   update_role(id, new_role = "id") |>
   step_rm(ext_col,int_col)|>
   step_mutate(
-    hp =str_extract(engine, "^(\\d+\\.?\\d*)HP|^(\\d+)HP")|>parse_number())|>
-  step_mutate( 
-    litre = str_extract(engine, "(\\d+\\.?\\d*)L|(\\d+\\.?\\d*) Liter")|>parse_number(),
-    engine_type = str_extract(engine,'Rotary|H6|H4|V6|V-8|V8|V10|V12|W12|I3|I4|I6|\\s[4|5|6|8]\\s| 10 | 12 '),
-    is_ecar=case_when(grepl('Electric',engine)~'YES'),
-    voltage = str_extract(engine, " (\\d\\d)V")|>parse_number(),
-    gdi_type = str_extract(engine, "GDI|PFI|EFI|MPFI|DDI|SIDI"),
-    gas_position = str_extract(engine, "OHV|OHC|SOHC|DOHC"),
-    cylinder = str_extract(engine, "(\\d+) Cylinder|(\\d+) Cylinder Engine|(\\d+)(?=[^\\d]*Cylinder)"),
+    hp =stringr::str_extract(engine, "^(\\d+\\.?\\d*)HP|^(\\d+)HP")|>readr::parse_number(),
+    hp_missing = case_when(is.na(hp)~1,.default=0),
+    litre = stringr::str_extract(engine, "(\\d+\\.?\\d*)L|(\\d+\\.?\\d*) Liter")|>readr::parse_number(),
+    litre_missing = case_when(is.na(litre)~1,.default=0),
+    engine_type = stringr::str_extract(engine,'Rotary|H6|H4|V6|V-8|V8|V10|V12|W12|I3|I4|I6|\\s[4|5|6|8]\\s| 10 | 12 '),
+    is_ecar=case_when(grepl('Electric',engine)~1,.default=0),
+    voltage = stringr::str_extract(engine, " (\\d\\d)V")|>readr::parse_number(),
+    voltage_missing = case_when(is.na(voltage)~1,.default=0),
+    gdi_type = stringr::str_extract(engine, "GDI|PFI|EFI|MPFI|DDI|SIDI"),
+    gas_position = stringr::str_extract(engine, "OHV|OHC|SOHC|DOHC"),
+    cylinder = stringr::str_extract(engine, "(\\d+) Cylinder|(\\d+) Cylinder Engine|(\\d+)(?=[^\\d]*Cylinder)"),
     is_turbo = case_when(grepl('Turbo|turbo',engine)~'YES'),
     is_twinturbo= case_when(grepl('Twin|twin',engine)~'YES'),
-    fuel_info = str_extract(engine, "Gasoline|Diesel|Electric|Flexible Fuel|Gasoline/Mild Electric Hybrid|Flex Fuel Capability") )|>
+    fuel_info = stringr::str_extract(engine, "Gasoline|Diesel|Electric|Flexible Fuel|Gasoline/Mild Electric Hybrid|Flex Fuel Capability") )|>
   step_rm(engine)|>
-  step_impute_median(all_numeric_predictors())|>
+   step_impute_median(all_numeric_predictors())|>
   step_mutate(model_year=2025-model_year,
               milage_year=milage/model_year,
               accident=case_when(
@@ -187,21 +216,136 @@ rcp_bs_v1 <-
               #ext_col= as.factor(ext_col),
               #int_col= as.factor(int_col),
               transmission= as.factor(transmission),
-              clean_title= as.factor(brand),
+              clean_title= as.factor(clean_title),
+              accident= as.factor(accident),
+              fuel_type=as.factor(fuel_type))|>
+   step_novel(all_nominal_predictors())|>
+  step_unknown(all_nominal_predictors())|>
+  step_other(all_nominal_predictors(),threshold=0.01)|>
+ step_dummy(all_nominal_predictors(),one_hot = TRUE)|>
+ #step_log(price, offset=1, skip=TRUE) |> # lead to bad rmse, remove it
+ step_log(milage,model_year,milage_year ,offset=1) |>
+ step_nzv(all_numeric_predictors())|>
+ step_normalize(all_numeric_predictors())|>
+ step_corr(all_predictors())|>
+ check_missing(all_predictors())
+# rcp_bs_v1 |>prep() |>bake(new_data = train_set)
+```
+
+#### 4.3 v2 base_line with transmission feature
+```{r}
+rcp_bs_v2 <- 
+   recipe(price ~ ., data = train) |>
+  update_role(id, new_role = "id") |>
+  step_rm(ext_col,int_col)|>
+  step_mutate(speed =stringr::str_extract(transmission, "^(\\d+)-Speed")|>readr::parse_number(),
+              speed_missing = case_when(is.na(speed)~1,.default=0), 
+              trans_mode=stringr::str_extract(transmission, 'Dual Shift Mode|Auto-Shift|A/T|AT|M/T|Mt|Automatic|At/Mt|F|Manual|Overdrive|CVT|Variable')) |>
+  step_rm(engine)|>
+  step_rm(transmission)|>
+  step_impute_median(all_numeric_predictors())|>
+  step_mutate(model_year=2025-model_year,
+              milage_year=milage/model_year,
+              accident=case_when(
+                accident=='None reported'~'none',
+                accident=='At least 1 accident or damage reported'~'report',
+                accident==''~NA,
+                .default='unknow'))|>
+  step_mutate(brand= as.factor(brand),
+              model= as.factor(model),
+              #engine= as.factor(engine),
+              #ext_col= as.factor(ext_col),
+              #int_col= as.factor(int_col),
+              #transmission= as.factor(transmission),
+              clean_title= as.factor(clean_title),
               accident= as.factor(accident),
               fuel_type=as.factor(fuel_type))|>
    step_novel(all_nominal_predictors())|>
   step_unknown(all_nominal_predictors())|>
   step_other(all_nominal_predictors(),threshold=0.01)|>
   step_dummy(all_nominal_predictors(),one_hot = TRUE)|>
-  step_log(price, offset=1, skip=TRUE) |>
+  #step_log(price, offset=1, skip=TRUE) |> # lead to bad rmse, remove it
   step_log(milage,model_year,milage_year ,offset=1) |>
   
   step_nzv(all_numeric_predictors())|>
   step_normalize(all_numeric_predictors())|>
   step_corr(all_predictors())|>
   check_missing(all_predictors())
-# rcp_bs_v1 |>prep() |>bake(new_data = train_set)
+#rcp_bs_v2 |> prep()|> bake(new_data = train_set)
+```
+
+#### 4.3 v3 base_line with model
+```{r}
+train|>select(id,price,model)|>
+  mutate(model_type=str_extract(tolower(model),
+                                '([a-z]-class)|(premium|luxury|base|sport|premium plus|premium|matic|platinum|luxury|ultimate|xlt)|( lt)'))
+
+```
+
+#### 4.4 v4 base_line with engine & transmission
+```{r}
+rcp_bs_v4 <- 
+   recipe(price ~ ., data = train) |>
+  update_role(id, new_role = "id") |>
+  step_rm(ext_col,int_col)|>
+   step_mutate(
+    hp =stringr::str_extract(engine, "^(\\d+\\.?\\d*)HP|^(\\d+)HP")|>readr::parse_number(),
+    hp_missing = case_when(is.na(hp)~1,.default=0),
+    litre = stringr::str_extract(engine, "(\\d+\\.?\\d*)L|(\\d+\\.?\\d*) Liter")|>readr::parse_number(),
+    litre_missing = case_when(is.na(litre)~1,.default=0),
+    engine_type = stringr::str_extract(engine,'Rotary|H6|H4|V6|V-8|V8|V10|V12|W12|I3|I4|I6|\\s[4|5|6|8]\\s| 10 | 12 '),
+    is_ecar=case_when(grepl('Electric',engine)~1,.default=0),
+    voltage = stringr::str_extract(engine, " (\\d\\d)V")|>readr::parse_number(),
+    voltage_missing = case_when(is.na(voltage)~1,.default=0),
+    gdi_type = stringr::str_extract(engine, "GDI|PFI|EFI|MPFI|DDI|SIDI"),
+    gas_position = stringr::str_extract(engine, "OHV|OHC|SOHC|DOHC"),
+    cylinder = stringr::str_extract(engine, "(\\d+) Cylinder|(\\d+) Cylinder Engine|(\\d+)(?=[^\\d]*Cylinder)"),
+    is_turbo = case_when(grepl('Turbo|turbo',engine)~'YES'),
+    is_twinturbo= case_when(grepl('Twin|twin',engine)~'YES'),
+    fuel_info = stringr::str_extract(engine, "Gasoline|Diesel|Electric|Flexible Fuel|Gasoline/Mild Electric Hybrid|Flex Fuel Capability") )|>
+    step_mutate(speed =stringr::str_extract(transmission, "^(\\d+)-Speed")|>readr::parse_number(),
+              speed_missing = case_when(is.na(speed)~1,.default=0), 
+              trans_mode=stringr::str_extract(transmission, 'Dual Shift Mode|Auto-Shift|A/T|AT|M/T|Mt|Automatic|At/Mt|F|Manual|Overdrive|CVT|Variable')) |>
+  step_rm(engine)|>
+  step_rm(transmission)|>
+  step_impute_median(all_numeric_predictors())|>
+  step_mutate(model_year=2025-model_year,
+              milage_year=milage/model_year,
+              accident=case_when(
+                accident=='None reported'~'none',
+                accident=='At least 1 accident or damage reported'~'report',
+                accident==''~NA,
+                .default='unknow'))|>
+  step_mutate(brand= as.factor(brand),
+              model= as.factor(model),
+              #engine= as.factor(engine),
+              #ext_col= as.factor(ext_col),
+              #int_col= as.factor(int_col),
+              #transmission= as.factor(transmission),
+              clean_title= as.factor(clean_title),
+              accident= as.factor(accident),
+              fuel_type=as.factor(fuel_type))|>
+   step_novel(all_nominal_predictors())|>
+  step_unknown(all_nominal_predictors())|>
+  step_other(all_nominal_predictors(),threshold=0.01)|>
+  step_dummy(all_nominal_predictors(),one_hot = TRUE)|>
+  #step_log(price, offset=1, skip=TRUE) |> # lead to bad rmse, remove it
+  step_log(milage,model_year,milage_year ,offset=1) |>
+  
+  step_nzv(all_numeric_predictors())|>
+  step_normalize(all_numeric_predictors())|>
+  step_corr(all_predictors())|>
+  check_missing(all_predictors())
+
+```
+
+
+#### all recipes
+```{r}
+selected_rcps <- list(base<-rcp_bs_v0,
+                      v1_engine<- rcp_bs_v1, 
+                      v2_transmission<-rcp_bs_v2,
+                      v4_eng_trans<-rcp_bs_v4)
 ```
 
 ### 5. Model Specification ----
@@ -228,6 +372,8 @@ lm_eng<-
    set_mode("regression")|>
    set_engine("lm") 
 
+selected_eng <- list(linear=lm_eng)
+
 ```
 
 
@@ -237,39 +383,33 @@ lm_eng<-
 set.seed(1234)
 simple_wf_fit <-
   workflow() |>
-  add_recipe(rcp_bs_v0) |>
+  add_recipe(rcp_bs_v4) |>
   add_model(lm_eng)|>
-  fit_resamples(cv_folds)
+  last_fit(df_split)
 
 simple_wf_fit|>collect_metrics()
-simple_pred <- simple_wf_rmse <-
-  simple_wf_fit|>
-  predict(new_data = train_set)|>
-  mutate(.pred=expm1(.pred))
-
-simple_pred|>
-  bind_cols( train_set )|>
-  rmse(truth=price,estimate=.pred)
-
-
-simple_wf_rmse
-#note: TODO with log 76050/75230, without log 72111, need check
 simple_wf_fit |>
   extract_fit_engine()|>
   plot()
 
+simple_wf_diag_df<- 
+  simple_wf_fit|>
+  collect_predictions()|>
+  mutate(.residual=price-.pred)|>
+  select(.row,.pred,.residual)|>
+  bind_cols(test_set)|>
+  relocate(all_of(c('price','.pred','.residual')),.after=1)
 ```
 #### simple workflowset
 
 ```{r}
 set.seed(1234)
 library(future)
-plan(multisession,workers = 8)
+plan(multisession,workers = 10)
 ctrl <- control_resamples(save_pred = TRUE, save_workflow = TRUE,verbose=TRUE)
 wfs_result <-
-  workflow_set(preproc = list(bs_v0=rcp_bs_v0,bs_v1=rcp_bs_v1),
-               models = list(linear=lm_eng) ) |>
-  option_add()|>
+  workflow_set(preproc = selected_rcps,
+               models = selected_eng ) |>
   workflow_map(fn='fit_resamples',
                resamples =cv_folds,
                metrics = metric_set(rmse, rsq),
@@ -278,9 +418,6 @@ wfs_result <-
 wfs_result|>collect_metrics()  
   
 plan(sequential)
-```
-```{r}
-
 ```
 
 ### 7. Tuning Grid ----
