@@ -266,19 +266,56 @@ rcp_bs_v2 <-
   step_dummy(all_nominal_predictors(),one_hot = TRUE)|>
   #step_log(price, offset=1, skip=TRUE) |> # lead to bad rmse, remove it
   step_log(milage,model_year,milage_year ,offset=1) |>
-  
   step_nzv(all_numeric_predictors())|>
   step_normalize(all_numeric_predictors())|>
-  step_corr(all_predictors())|>
+  step_corr(all_numeric_predictors())|>
   check_missing(all_predictors())
 #rcp_bs_v2 |> prep()|> bake(new_data = train_set)
 ```
 
 #### 4.3 v3 base_line with model
 ```{r}
-train|>select(id,price,model)|>
-  mutate(model_type=str_extract(tolower(model),
-                                '([a-z]-class)|(premium|luxury|base|sport|premium plus|premium|matic|platinum|luxury|ultimate|xlt)|( lt)'))
+rcp_bs_v3<-recipe(price ~ ., data = train) |>
+  update_role(id, new_role = "id") |>
+  step_rm(ext_col,int_col)|>
+  step_mutate(model_type=stringr::str_extract(tolower(model),
+                                '([a-z]-class)|(premium|luxury|base|sport|premium plus|premium|turbo|matic|se|sel|platinum|limited|deluxe|laramie|lux|luxury|ultimate|gt|hse|xle|xlt)|( lt)'),
+         model_word = stringr::str_extract(model, "^\\b[[:alnum:]-]+\\b"),
+         # Extract the first number
+         model_number = stringr::str_extract(stringr::str_replace(model, "\\b[[:alnum:]-]+\\b", ""), "\\d+"))|>
+  step_rm(model)|>
+  step_impute_median(all_numeric_predictors())|>
+  step_mutate(model_year=2025-model_year,
+              milage_year=milage/model_year,
+              accident=case_when(
+                accident=='None reported'~'none',
+                accident=='At least 1 accident or damage reported'~'report',
+                accident==''~NA,
+                .default='unknow'))|>
+  step_mutate(brand= as.factor(brand),
+              #model= as.factor(model),
+              engine= as.factor(engine),
+              #ext_col= as.factor(ext_col),
+              #int_col= as.factor(int_col),
+              transmission= as.factor(transmission),
+              clean_title= as.factor(clean_title),
+              accident= as.factor(accident),
+              fuel_type=as.factor(fuel_type))|>
+  step_novel(all_nominal_predictors())|>
+  step_unknown(all_nominal_predictors())|>
+  step_other(all_nominal_predictors(),threshold=0.01)|>
+  step_dummy(all_nominal_predictors(),one_hot = TRUE)|>
+  
+  #step_log(price, offset=1, skip=TRUE) |>
+  step_log(milage,model_year,milage_year ,offset=1) |>
+  
+  step_nzv(all_numeric_predictors())|>
+  step_normalize(all_numeric_predictors())|>
+  step_corr(all_predictors())|>
+  check_missing(all_predictors())
+ 
+#rcp_bs_v3|>prep()|>juice()|>glimpse()
+
 
 ```
 
@@ -342,10 +379,17 @@ rcp_bs_v4 <-
 
 #### all recipes
 ```{r}
-selected_rcps <- list(base<-rcp_bs_v0,
-                      v1_engine<- rcp_bs_v1, 
-                      v2_transmission<-rcp_bs_v2,
-                      v4_eng_trans<-rcp_bs_v4)
+set.seed(1234)
+library(future)
+library(furrr)
+selected_rcps <- list(base=rcp_bs_v0,
+                      v1_engine=rcp_bs_v1,
+                      v2_transmission=rcp_bs_v2,
+                      v3_model = rcp_bs_v3,
+                      v4_eng_trans=rcp_bs_v4)
+plan(multisession,workers = 5)
+#selected_rcps|>future_map(\(rcp_item) rcp_item|>prep()|>bake(new_data=train)|>summary())
+plan(sequential)
 ```
 
 ### 5. Model Specification ----
@@ -383,14 +427,14 @@ selected_eng <- list(linear=lm_eng)
 set.seed(1234)
 simple_wf_fit <-
   workflow() |>
-  add_recipe(rcp_bs_v4) |>
-  add_model(lm_eng)|>
+  add_recipe(rcp_bs_v1) |>
+  add_model(lgbm_eng)|>
   last_fit(df_split)
 
 simple_wf_fit|>collect_metrics()
-simple_wf_fit |>
-  extract_fit_engine()|>
-  plot()
+# simple_wf_fit |>
+#   extract_fit_engine()|>
+#   plot()
 
 simple_wf_diag_df<- 
   simple_wf_fit|>
@@ -405,7 +449,7 @@ simple_wf_diag_df<-
 ```{r}
 set.seed(1234)
 library(future)
-plan(multisession,workers = 10)
+plan(multisession,workers = 12)
 ctrl <- control_resamples(save_pred = TRUE, save_workflow = TRUE,verbose=TRUE)
 wfs_result <-
   workflow_set(preproc = selected_rcps,
@@ -492,24 +536,25 @@ cars_predictions <- final_model |>
 
 ### 11. Prepare Submission ----
 ```{r}
+final_model <- simple_wf_fit|>extract_workflow()
 final_predictions <- final_model |>
-   predict(new_data = cars_test_processed) |>
-   mutate(price = expm1(.pred)) |>
-   select(di, price)
+   predict(new_data = test) 
 
  #Handle negative predictions
  final_predictions <- final_predictions |>
-   mutate(Price = ifelse(Price < 0, 0, Price))
+   mutate(.pred= ifelse(.pred< 0, 0, .pred))
 
  # Save submission file
- write_csv(final_predictions, "submission.csv")
+ submission |>
+   mutate(price=final_predictions$.pred)|>
+   write_csv("submission_lgb.csv")
 
 ```
 
 ## kaggle submission
 ```{r}
 # submit latest submission.csv
-system('kaggle competitions submit -c playground-series-s4e9 -f submission.csv.gz -m "init _ just sample_submission.csv"')
+system('kaggle competitions submit -c playground-series-s4e9 -f submission_lgb.csv.gz -m "lgb with rcp v1 no tune. 69467 rmse/ 15.3% rsq "')
 Sys.sleep(15)
 # get latest score 
 system('kaggle competitions submissions -q -c playground-series-s4e9')
