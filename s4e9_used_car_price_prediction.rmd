@@ -523,6 +523,19 @@ wfs_result|>collect_metrics()
   
 plan(sequential)
 ```
+### 7 stacking
+```{r}
+combined_fit <-
+  stacks::stacks()|>
+  stacks::add_candidates(wfs_result)|>
+  stacks::blend_predictions()|>
+  stacks::fit_members()
+
+combined_fit|>
+  autoplot(type = "weights")
+
+autoplot(combined_fit)
+```
 
 ### 7. Tuning Grid ----
 ```{r}
@@ -582,21 +595,15 @@ plan(sequential)
 
 ### 10. Evaluate on Test Set ----
 ```{r}
-# cars_predictions <- final_model |>
-#    predict(new_data = cars_test_set) |>
-#    bind_cols(cars_test_set |> select(price))
-# 
-#  # Calculate RMSE
-#  rmse_value <- cars_predictions |>
-#    rmse(truth = price, estimate = .pred)
-# 
-#  print(rmse_value)
-
+combined_test_result <- 
+  test_set %>%
+  bind_cols(predict(combined_fit, .))
+combined_test_result|>rsq(price, .pred)
 ```
 
 ### 11. Prepare Submission ----
 ```{r}
-final_model <- simple_wf_fit|>extract_workflow()
+final_model <- combined_fit#simple_wf_fit|>extract_workflow()
 final_predictions <- final_model |>
    predict(new_data = test) 
 
@@ -615,7 +622,7 @@ final_predictions <- final_model |>
 ## kaggle submission
 ```{r}
 # submit latest submission.csv
-system('kaggle competitions submit -c playground-series-s4e9 -f submission.csv.zip -m "lgb with rcp v1 no tune. 69467 rmse/ 15.3% rsq "')
+system('kaggle competitions submit -c playground-series-s4e9 -f submission.csv.zip -m "stacking 69827/15.8% "')
 Sys.sleep(15)
 # get latest score 
 system('kaggle competitions submissions -q -c playground-series-s4e9')
