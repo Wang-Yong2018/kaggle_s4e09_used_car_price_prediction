@@ -1,0 +1,9 @@
+"","wflow_id",".config","preproc","model",".metric",".estimator","mean","n","std_err"
+"1","v1_engine_linear","Preprocessor1_Model1","recipe","linear_reg","rmse","standard",74180.6915015597,5,2077.56920952027
+"2","v1_engine_linear","Preprocessor1_Model1","recipe","linear_reg","rsq","standard",0.130855540566484,5,0.0067145812828994
+"3","v1_engine_lgbm","Preprocessor1_Model1","recipe","boost_tree","rmse","standard",73830.2907171726,5,2007.48587046453
+"4","v1_engine_lgbm","Preprocessor1_Model1","recipe","boost_tree","rsq","standard",0.139739687785734,5,0.00560585967080459
+"5","v5_engin_model_linear","Preprocessor1_Model1","recipe","linear_reg","rmse","standard",74150.005600788,5,2075.59374493935
+"6","v5_engin_model_linear","Preprocessor1_Model1","recipe","linear_reg","rsq","standard",0.131578167295532,5,0.0067266361779725
+"7","v5_engin_model_lgbm","Preprocessor1_Model1","recipe","boost_tree","rmse","standard",73839.2610686667,5,2001.88494053585
+"8","v5_engin_model_lgbm","Preprocessor1_Model1","recipe","boost_tree","rsq","standard",0.139552942514126,5,0.00531914384781227
