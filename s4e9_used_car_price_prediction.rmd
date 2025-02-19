@@ -376,19 +376,78 @@ rcp_bs_v4 <-
 
 ```
 
+#### 4.5 v1+v3 engine + model 
+```{r}
+rcp_bs_v5 <- 
+   recipe(price ~ ., data = train) |>
+  update_role(id, new_role = "id") |>
+  step_rm(ext_col,int_col)|>
+  step_mutate(
+    hp =stringr::str_extract(engine, "^(\\d+\\.?\\d*)HP|^(\\d+)HP")|>readr::parse_number(),
+    hp_missing = case_when(is.na(hp)~1,.default=0),
+    litre = stringr::str_extract(engine, "(\\d+\\.?\\d*)L|(\\d+\\.?\\d*) Liter")|>readr::parse_number(),
+    litre_missing = case_when(is.na(litre)~1,.default=0),
+    engine_type = stringr::str_extract(engine,'Rotary|H6|H4|V6|V-8|V8|V10|V12|W12|I3|I4|I6|\\s[4|5|6|8]\\s| 10 | 12 '),
+    is_ecar=case_when(grepl('Electric',engine)~1,.default=0),
+    voltage = stringr::str_extract(engine, " (\\d\\d)V")|>readr::parse_number(),
+    voltage_missing = case_when(is.na(voltage)~1,.default=0),
+    gdi_type = stringr::str_extract(engine, "GDI|PFI|EFI|MPFI|DDI|SIDI"),
+    gas_position = stringr::str_extract(engine, "OHV|OHC|SOHC|DOHC"),
+    cylinder = stringr::str_extract(engine, "(\\d+) Cylinder|(\\d+) Cylinder Engine|(\\d+)(?=[^\\d]*Cylinder)"),
+    is_turbo = case_when(grepl('Turbo|turbo',engine)~'YES'),
+    is_twinturbo= case_when(grepl('Twin|twin',engine)~'YES'),
+    fuel_info = stringr::str_extract(engine, "Gasoline|Diesel|Electric|Flexible Fuel|Gasoline/Mild Electric Hybrid|Flex Fuel Capability") )|>
+   step_mutate(model_type=stringr::str_extract(tolower(model),
+                                '([a-z]-class)|(premium|luxury|base|sport|premium plus|premium|turbo|matic|se|sel|platinum|limited|deluxe|laramie|lux|luxury|ultimate|gt|hse|xle|xlt)|( lt)'),
+         model_word = stringr::str_extract(model, "^\\b[[:alnum:]-]+\\b"),
+         # Extract the first number
+         model_number = stringr::str_extract(stringr::str_replace(model, "\\b[[:alnum:]-]+\\b", ""), "\\d+"))|>
+  step_rm(model)|>
+  step_rm(engine)|>
+   step_impute_median(all_numeric_predictors())|>
+  step_mutate(model_year=2025-model_year,
+              milage_year=milage/model_year,
+              accident=case_when(
+                accident=='None reported'~'none',
+                accident=='At least 1 accident or damage reported'~'report',
+                accident==''~NA,
+                .default='unknow'))|>
+  step_mutate(brand= as.factor(brand),
+              #model= as.factor(model),
+              #engine= as.factor(engine),
+              #ext_col= as.factor(ext_col),
+              #int_col= as.factor(int_col),
+              transmission= as.factor(transmission),
+              clean_title= as.factor(clean_title),
+              accident= as.factor(accident),
+              fuel_type=as.factor(fuel_type))|>
+   step_novel(all_nominal_predictors())|>
+  step_unknown(all_nominal_predictors())|>
+  step_other(all_nominal_predictors(),threshold=0.01)|>
+ step_dummy(all_nominal_predictors(),one_hot = TRUE)|>
+ #step_log(price, offset=1, skip=TRUE) |> # lead to bad rmse, remove it
+ step_log(milage,model_year,milage_year ,offset=1) |>
+ step_nzv(all_numeric_predictors())|>
+ step_normalize(all_numeric_predictors())|>
+ step_corr(all_predictors())|>
+ check_missing(all_predictors())
 
+```
+
+ 
 #### all recipes
 ```{r}
 set.seed(1234)
 library(future)
 library(furrr)
-selected_rcps <- list(base=rcp_bs_v0,
+selected_rcps <- list(#base=rcp_bs_v0,
                       v1_engine=rcp_bs_v1,
-                      v2_transmission=rcp_bs_v2,
-                      v3_model = rcp_bs_v3,
-                      v4_eng_trans=rcp_bs_v4)
+                      #v2_transmission=rcp_bs_v2,
+                      #v3_model = rcp_bs_v3,
+                      #v4_eng_trans=rcp_bs_v4,
+                      v5_engin_model= rcp_bs_v5)
 plan(multisession,workers = 5)
-#selected_rcps|>future_map(\(rcp_item) rcp_item|>prep()|>bake(new_data=train)|>summary())
+selected_rcps|>future_map(\(rcp_item) rcp_item|>prep()|>bake(new_data=train)|>summary())
 plan(sequential)
 ```
 
@@ -416,7 +475,8 @@ lm_eng<-
    set_mode("regression")|>
    set_engine("lm") 
 
-selected_eng <- list(linear=lm_eng)
+selected_eng <- list(linear=lm_eng,
+                     lgbm=lgbm_eng)
 
 ```
 
@@ -466,16 +526,16 @@ plan(sequential)
 
 ### 7. Tuning Grid ----
 ```{r}
-cars_grid <- grid_space_filling(
-  #learn_rate(range = c(0.01, 0.1)),
-  # loss_reduction(range = c(0, 10)), #Keep if you want it.
-  #bag_fraction(range = c(0.7, 0.9)), # Specify prop = TRUE.
-  tree_depth(range = c(5, 10)),
-  finalize(mtry(range = c(2, 10)),
-           select(cars_train_set, -Price)),
-  min_n(range = c(2, 20)),
-  size = 10
-)
+# cars_grid <- grid_space_filling(
+#   #learn_rate(range = c(0.01, 0.1)),
+#   # loss_reduction(range = c(0, 10)), #Keep if you want it.
+#   #bag_fraction(range = c(0.7, 0.9)), # Specify prop = TRUE.
+#   tree_depth(range = c(5, 10)),
+#   finalize(mtry(range = c(2, 10)),
+#            select(cars_train_set, -Price)),
+#   min_n(range = c(2, 20)),
+#   size = 10
+# )
 
 ```
 
@@ -489,31 +549,31 @@ cars_grid <- grid_space_filling(
 ### 9. Tuning and Evaluation ----
 ```{r}
 # plan(multisession,workers =2)
-cars_tune_results <- cars_workflow |>
-  tune_grid(
-    resamples = cars_folds,
-    grid = cars_grid,
-    metrics = metric_set(rmse),
-     control = control_grid(save_pred = TRUE, 
-                            verbose = TRUE,
-                            allow_par = F) # Keep predictions
-  )
- 
- # Find best parameters
- best_params <- cars_tune_results |>
-   select_best("rmse")
-
- # Finalize workflow with best parameters
- final_workflow <- cars_workflow |>
-   finalize_workflow(best_params)
+# cars_tune_results <- cars_workflow |>
+#   tune_grid(
+#     resamples = cars_folds,
+#     grid = cars_grid,
+#     metrics = metric_set(rmse),
+#      control = control_grid(save_pred = TRUE, 
+#                             verbose = TRUE,
+#                             allow_par = F) # Keep predictions
+#   )
+#  
+#  # Find best parameters
+#  best_params <- cars_tune_results |>
+#    select_best("rmse")
+# 
+#  # Finalize workflow with best parameters
+#  final_workflow <- cars_workflow |>
+#    finalize_workflow(best_params)
 ```
 
 
 ```{r}
 # Fit the final workflow to the training data
-final_lgbm_fit <- last_fit(final_workflow,cars_split )
-final_lgbm_mod <- extract_workflow(final_lgbm_fit )
-collect_metrics(final_lgmb_mod)
+# final_lgbm_fit <- last_fit(final_workflow,cars_split )
+# final_lgbm_mod <- extract_workflow(final_lgbm_fit )
+# collect_metrics(final_lgmb_mod)
 
 # plan(sequential)
 
@@ -522,15 +582,15 @@ collect_metrics(final_lgmb_mod)
 
 ### 10. Evaluate on Test Set ----
 ```{r}
-cars_predictions <- final_model |>
-   predict(new_data = cars_test_set) |>
-   bind_cols(cars_test_set |> select(price))
-
- # Calculate RMSE
- rmse_value <- cars_predictions |>
-   rmse(truth = price, estimate = .pred)
-
- print(rmse_value)
+# cars_predictions <- final_model |>
+#    predict(new_data = cars_test_set) |>
+#    bind_cols(cars_test_set |> select(price))
+# 
+#  # Calculate RMSE
+#  rmse_value <- cars_predictions |>
+#    rmse(truth = price, estimate = .pred)
+# 
+#  print(rmse_value)
 
 ```
 
@@ -547,16 +607,20 @@ final_predictions <- final_model |>
  # Save submission file
  submission |>
    mutate(price=final_predictions$.pred)|>
-   write_csv("submission_lgb.csv")
-
+   readr::write_csv("submission.csv")
+ zip('submission.csv.zip','submission.csv')
+ 
 ```
 
 ## kaggle submission
 ```{r}
 # submit latest submission.csv
-system('kaggle competitions submit -c playground-series-s4e9 -f submission_lgb.csv.gz -m "lgb with rcp v1 no tune. 69467 rmse/ 15.3% rsq "')
+system('kaggle competitions submit -c playground-series-s4e9 -f submission.csv.zip -m "lgb with rcp v1 no tune. 69467 rmse/ 15.3% rsq "')
 Sys.sleep(15)
 # get latest score 
 system('kaggle competitions submissions -q -c playground-series-s4e9')
+
+# get leader board score
+#system('kaggle competitions leaderboard -s -v -c playground-series-s4e9')
 ```
 
